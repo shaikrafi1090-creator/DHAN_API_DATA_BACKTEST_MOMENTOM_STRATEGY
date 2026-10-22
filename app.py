@@ -19,7 +19,9 @@ except:
     ACCESS_TOKEN = "YOUR_ACCESS_TOKEN"
 
 # Initialize Dhan API
-dhan = dhanhq(CLIENT_ID, ACCESS_TOKEN)
+# Initialize Dhan API
+dhan_context = DhanContext(CLIENT_ID, ACCESS_TOKEN)
+dhan = dhanhq(dhan_context)
 
 # --- 1. GET DHAN SECURITY IDs LIVE ---
 @st.cache_data(ttl=86400) # Cache for 24 hours
