@@ -97,19 +97,25 @@ BENCHMARK = "^NSEI"
 st.sidebar.success(f"✅ Loaded {len(TICKERS)} stocks for Backtest")
 st.sidebar.info("🔌 Connected to DhanHQ API")
 
-# --- 3. FETCH DHAN HISTORICAL DATA ---
+import time # Ise file ke top par import zaroor karein agar nahi hai
+
+# --- 3. FETCH DHAN HISTORICAL DATA (BULLETPROOF VERSION) ---
 @st.cache_data(show_spinner=False)
 def fetch_historical_data(tickers, start_date, end_date):
     df_combined = pd.DataFrame()
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = end_date.strftime("%Y-%m-%d")
     
+    # 1. Fetch Stocks from Dhan API
     for symbol in tickers:
         sec_id = DHAN_MAP.get(symbol)
         if not sec_id:
             continue
             
         try:
+            # 🛑 API Rate Limit Protection (Server block se bachne ke liye delay)
+            time.sleep(0.2) 
+            
             req_data = dhan.historical_daily_data(
                 symbol=str(sec_id), 
                 exchange_segment='NSE_EQ' if symbol != BENCHMARK else 'IDX_I',
@@ -121,16 +127,32 @@ def fetch_historical_data(tickers, start_date, end_date):
             
             if req_data.get('status') == 'success' and req_data.get('data'):
                 temp_df = pd.DataFrame(req_data['data'])
-                temp_df['Date'] = pd.to_datetime(temp_df['start_Time'])
+                # Handle possible column name changes by Dhan
+                date_col = 'start_Time' if 'start_Time' in temp_df.columns else 'date'
+                temp_df['Date'] = pd.to_datetime(temp_df[date_col])
                 temp_df.set_index('Date', inplace=True)
+                
                 df_combined[symbol] = temp_df['close']
-        except Exception:
+            else:
+                # Dhan API exact error console me print karega
+                print(f"Dhan API Error for {symbol}: {req_data}")
+                
+        except Exception as e:
+            print(f"Crash for {symbol}: {e}")
             pass 
+            
+    # 🛑 2. NIFTY 50 FALLBACK (Safe Net)
+    # Agar Dhan API ne Nifty 50 ka data nahi diya, toh backtest fail na ho isliye yfinance se uthayega
+    if BENCHMARK not in df_combined.columns or df_combined[BENCHMARK].isnull().all():
+        try:
+            import yfinance as yf
+            bench_data = yf.download(BENCHMARK, start=start_date, end=end_date, progress=False)['Close']
+            df_combined[BENCHMARK] = bench_data
+        except:
+            pass
             
     df_combined = df_combined.ffill().dropna(how='all')
     return df_combined
-
-# ==========================================
 # CREATE TABS
 # ==========================================
 tab1, tab2 = st.tabs(["🔴 Live Momentum Scanner", "📊 Pro Quant Backtest Engine"])
