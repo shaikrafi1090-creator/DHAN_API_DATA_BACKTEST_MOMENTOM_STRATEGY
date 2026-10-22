@@ -65,7 +65,7 @@ DHAN_MAP = get_dhan_security_map()
 # --- 2. LOAD USER SYMBOLS ---
 @st.cache_data
 def load_symbols():
-    file_path = "STOCK SYMBOLS (1).csv"
+    file_path = "Untitled spreadsheet - Sheet1 (11)_2.csv"
     if not os.path.exists(file_path):
         file_path = "symbols.csv"
         
