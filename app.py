@@ -14,25 +14,47 @@ try:
     CLIENT_ID = st.secrets["DHAN_CLIENT_ID"]
     ACCESS_TOKEN = st.secrets["DHAN_ACCESS_TOKEN"]
 except:
-    # Local testing fallback - Replace with actual keys for local use
+    # Local testing fallback - Replace with actual keys
     CLIENT_ID = "YOUR_CLIENT_ID"
     ACCESS_TOKEN = "YOUR_ACCESS_TOKEN"
 
 # Initialize Dhan API
-# Initialize Dhan API
 dhan_context = DhanContext(CLIENT_ID, ACCESS_TOKEN)
 dhan = dhanhq(dhan_context)
 
-# --- 1. GET DHAN SECURITY IDs LIVE ---
-@st.cache_data(ttl=86400) # Cache for 24 hours
+# --- 1. GET DHAN SECURITY IDs (LOCAL FILE SUPPORT ADDED) ---
+@st.cache_data(ttl=86400)
 def get_dhan_security_map():
     try:
-        csv_url = "https://images.dhan.co/api-data/api-scrip-master.csv"
-        df_dhan = pd.read_csv(csv_url, low_memory=False)
-        nse_stocks = df_dhan[(df_dhan['SEM_EXM_EXCH_ID'] == 'NSE') & (df_dhan['SEM_SERIES'] == 'EQ')]
+        # System sabse pehle in local files ko dhoondega
+        local_files = [
+            "Untitled spreadsheet - Sheet1 (11)_2.csv", 
+            "Untitled spreadsheet - Sheet1 (11).csv",
+            "api-scrip-master.csv",
+            "dhan_scrip_master.csv"
+        ]
+        
+        df_dhan = None
+        for lf in local_files:
+            if os.path.exists(lf):
+                df_dhan = pd.read_csv(lf, low_memory=False)
+                st.sidebar.success(f"📂 Loaded Dhan IDs from: {lf}")
+                break
+                
+        # Agar local file nahi mili, toh fallback live server se fetch karega
+        if df_dhan is None:
+            csv_url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+            df_dhan = pd.read_csv(csv_url, low_memory=False)
+            st.sidebar.info("🌐 Fetched Dhan IDs from Live Server")
+
+        # Map logic (Pre-filtered ya Full dono files par kaam karega)
+        if 'SEM_EXM_EXCH_ID' in df_dhan.columns:
+            nse_stocks = df_dhan[(df_dhan['SEM_EXM_EXCH_ID'] == 'NSE') & (df_dhan['SEM_SERIES'] == 'EQ')]
+        else:
+            nse_stocks = df_dhan 
+
         security_dict = dict(zip(nse_stocks['SEM_TRADING_SYMBOL'], nse_stocks['SEM_SMST_SECURITY_ID']))
-        # Add Nifty 50 Index manually for benchmark tracking
-        security_dict["^NSEI"] = "26000" 
+        security_dict["^NSEI"] = "26000" # Nifty 50 manual entry
         return security_dict
     except Exception as e:
         st.error(f"Error fetching Dhan Scrip Master: {e}")
@@ -43,15 +65,26 @@ DHAN_MAP = get_dhan_security_map()
 # --- 2. LOAD USER SYMBOLS ---
 @st.cache_data
 def load_symbols():
-    file_path = "Untitled spreadsheet - Sheet1 (11).csv"
+    file_path = "STOCK SYMBOLS (1).csv"
     if not os.path.exists(file_path):
         file_path = "symbols.csv"
         
     if os.path.exists(file_path):
         df_symbols = pd.read_csv(file_path)
+        
+        # Smart Column Detection (Taki KeyError: 'Symbol' na aaye)
+        if 'Symbol' in df_symbols.columns:
+            col_name = 'Symbol'
+        elif 'SYMBOL' in df_symbols.columns:
+            col_name = 'SYMBOL'
+        elif 'SEM_TRADING_SYMBOL' in df_symbols.columns:
+            col_name = 'SEM_TRADING_SYMBOL'
+        else:
+            col_name = df_symbols.columns[0]
+            
         ticker_list = []
-        for sym in df_symbols['Symbol'].dropna():
-            sym_str = str(sym).strip().replace('.NS', '') # Dhan needs clean symbol without .NS
+        for sym in df_symbols[col_name].dropna():
+            sym_str = str(sym).strip().replace('.NS', '') 
             ticker_list.append(sym_str)
         return ticker_list
     else:
@@ -61,7 +94,7 @@ def load_symbols():
 TICKERS = load_symbols()
 BENCHMARK = "^NSEI" 
 
-st.sidebar.success(f"✅ Loaded {len(TICKERS)} stocks from CSV")
+st.sidebar.success(f"✅ Loaded {len(TICKERS)} stocks for Backtest")
 st.sidebar.info("🔌 Connected to DhanHQ API")
 
 # --- 3. FETCH DHAN HISTORICAL DATA ---
@@ -71,7 +104,6 @@ def fetch_historical_data(tickers, start_date, end_date):
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = end_date.strftime("%Y-%m-%d")
     
-    # Process batch
     for symbol in tickers:
         sec_id = DHAN_MAP.get(symbol)
         if not sec_id:
@@ -79,7 +111,7 @@ def fetch_historical_data(tickers, start_date, end_date):
             
         try:
             req_data = dhan.historical_daily_data(
-                symbol=str(sec_id), # API takes security ID string
+                symbol=str(sec_id), 
                 exchange_segment='NSE_EQ' if symbol != BENCHMARK else 'IDX_I',
                 instrument_type='EQUITY' if symbol != BENCHMARK else 'INDEX',
                 expiry_code=0,
@@ -93,9 +125,8 @@ def fetch_historical_data(tickers, start_date, end_date):
                 temp_df.set_index('Date', inplace=True)
                 df_combined[symbol] = temp_df['close']
         except Exception:
-            pass # Skip stock if API fails for it
+            pass 
             
-    # Forward fill missing data points to handle trading holidays uniformly
     df_combined = df_combined.ffill().dropna(how='all')
     return df_combined
 
@@ -148,7 +179,6 @@ with tab1:
 # TAB 2: BACKTEST & EQUITY CURVE
 # ==========================================
 with tab2:
-    # UI Controls
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         bt_top_n = st.slider("Stocks to hold", min_value=3, max_value=20, value=10, key='bt_n')
@@ -178,14 +208,10 @@ with tab2:
             st.error("Failed to fetch historical data from Dhan API. Please check your credentials and network.")
         else:
             with st.spinner("Simulating multi-year rebalancing and calculating Institutional Quants metrics..."):
-                
-                # Monthly Resampling for Rebalance Dates
                 monthly_dates = df_daily.resample('ME').last().index
-                
                 portfolio_returns = []
                 benchmark_returns = []
                 dates_tracked = []
-                
                 txn_cost_decimal = txn_cost_pct / 100.0
                 previous_ranked_stocks = []
                 active_positions = {}
@@ -194,7 +220,6 @@ with tab2:
                 step = 1 if rebalance_freq == "Monthly" else 3
                 periods_per_year = 12 if rebalance_freq == "Monthly" else 4
                 
-                # Core Backtest Loop
                 for i in range(6, len(monthly_dates) - step, step):
                     eval_date = monthly_dates[i]
                     start_lookback = monthly_dates[i-6]
@@ -215,31 +240,25 @@ with tab2:
                     if not scores: continue
                     ranked_stocks = sorted(scores, key=scores.get, reverse=True)[:bt_top_n]
                     
-                    # Log Exits
                     for t in list(active_positions.keys()):
                         if t not in ranked_stocks:
                             try:
                                 entry_date = active_positions[t]['entry_date']
                                 entry_price = active_positions[t]['entry_price']
                                 exit_price = df_daily[t].loc[:eval_date].dropna().iloc[-1]
-                                
                                 days_held = (eval_date - entry_date).days
                                 net_ret = ((exit_price - entry_price) / entry_price) - txn_cost_decimal
                                 
                                 completed_trades.append({
-                                    'Stock': t,
-                                    'Entry Date': entry_date.strftime('%Y-%m-%d'),
-                                    'Entry Price (₹)': round(entry_price, 2),
-                                    'Exit Date': eval_date.strftime('%Y-%m-%d'),
-                                    'Exit Price (₹)': round(exit_price, 2),
-                                    'Holding Days': days_held,
+                                    'Stock': t, 'Entry Date': entry_date.strftime('%Y-%m-%d'),
+                                    'Entry Price (₹)': round(entry_price, 2), 'Exit Date': eval_date.strftime('%Y-%m-%d'),
+                                    'Exit Price (₹)': round(exit_price, 2), 'Holding Days': days_held,
                                     'Net Return (%)': round(net_ret * 100, 2)
                                 })
                             except Exception:
                                 pass
                             del active_positions[t]
                     
-                    # Log Entries
                     for t in ranked_stocks:
                         if t not in active_positions:
                             try:
@@ -248,7 +267,6 @@ with tab2:
                             except Exception:
                                 pass
 
-                    # Portfolio Returns Calculation
                     port_period_ret = 0
                     valid_stocks = 0
                     for t in ranked_stocks:
@@ -256,7 +274,6 @@ with tab2:
                             buy_price = df_daily[t].loc[:eval_date].dropna().iloc[-1]
                             sell_price = df_daily[t].loc[:next_rebalance_date].dropna().iloc[-1]
                             gross_ret = (sell_price - buy_price) / buy_price
-                            
                             net_ret = gross_ret - txn_cost_decimal if t not in previous_ranked_stocks else gross_ret
                             port_period_ret += net_ret
                             valid_stocks += 1
@@ -277,7 +294,6 @@ with tab2:
                     dates_tracked.append(next_rebalance_date)
                     previous_ranked_stocks = ranked_stocks
 
-                # Final Open Position Close
                 if dates_tracked:
                     final_date = dates_tracked[-1]
                     for t in list(active_positions.keys()):
@@ -285,17 +301,13 @@ with tab2:
                             entry_date = active_positions[t]['entry_date']
                             entry_price = active_positions[t]['entry_price']
                             exit_price = df_daily[t].loc[:final_date].dropna().iloc[-1]
-                            
                             days_held = (final_date - entry_date).days
                             net_ret = ((exit_price - entry_price) / entry_price) - txn_cost_decimal
                             
                             completed_trades.append({
-                                'Stock': t,
-                                'Entry Date': entry_date.strftime('%Y-%m-%d'),
-                                'Entry Price (₹)': round(entry_price, 2),
-                                'Exit Date': final_date.strftime('%Y-%m-%d') + " (Active)",
-                                'Exit Price (₹)': round(exit_price, 2),
-                                'Holding Days': days_held,
+                                'Stock': t, 'Entry Date': entry_date.strftime('%Y-%m-%d'),
+                                'Entry Price (₹)': round(entry_price, 2), 'Exit Date': final_date.strftime('%Y-%m-%d') + " (Active)",
+                                'Exit Price (₹)': round(exit_price, 2), 'Holding Days': days_held,
                                 'Net Return (%)': round(net_ret * 100, 2)
                             })
                         except Exception:
@@ -307,10 +319,8 @@ with tab2:
                     equity_df['Momentum Strategy (Net)'] = 100 * (1 + pd.Series(portfolio_returns)).cumprod().values
                     equity_df['Nifty 50 Benchmark'] = 100 * (1 + pd.Series(benchmark_returns)).cumprod().values
                     
-                    # 1. Main Equity Curve
                     st.line_chart(equity_df, height=400, color=["#00C853", "#FFA500"])
                     
-                    # Math Basics
                     final_port_val = equity_df['Momentum Strategy (Net)'].iloc[-1]
                     final_bench_val = equity_df['Nifty 50 Benchmark'].iloc[-1]
                     days_total = (dates_tracked[-1] - dates_tracked[0]).days
@@ -318,7 +328,6 @@ with tab2:
                     cagr = ((final_port_val / 100) ** (1 / years)) - 1
                     bench_cagr = ((final_bench_val / 100) ** (1 / years)) - 1
                     
-                    # Drawdowns
                     roll_max = equity_df['Momentum Strategy (Net)'].cummax()
                     drawdown = (equity_df['Momentum Strategy (Net)'] - roll_max) / roll_max
                     max_dd = drawdown.min() * 100
@@ -328,7 +337,6 @@ with tab2:
                     bench_drawdown = (equity_df['Nifty 50 Benchmark'] - bench_roll_max) / bench_roll_max
                     bench_max_dd = bench_drawdown.min() * 100
                     
-                    # Advanced Ratios
                     rf_rate = 0.06
                     port_returns_series = pd.Series(portfolio_returns)
                     annual_factor = np.sqrt(periods_per_year)
@@ -340,33 +348,24 @@ with tab2:
                     sortino_ratio = (cagr - rf_rate) / downside_dev if downside_dev > 0 else 0
                     calmar_ratio = cagr / abs(max_dd / 100) if max_dd != 0 else 0
                     
-                    # Trade Stats
                     trades_df = pd.DataFrame(completed_trades)
                     if not trades_df.empty:
                         total_trades = len(trades_df)
                         avg_holding_days = int(trades_df['Holding Days'].mean())
-                        
                         winning_trades = trades_df[trades_df['Net Return (%)'] > 0]
                         losing_trades = trades_df[trades_df['Net Return (%)'] <= 0]
-                        
                         win_rate = (len(winning_trades) / total_trades) * 100
                         avg_win = winning_trades['Net Return (%)'].mean() if not winning_trades.empty else 0
                         avg_loss = losing_trades['Net Return (%)'].mean() if not losing_trades.empty else 0
-                        
                         gross_profit = winning_trades['Net Return (%)'].sum()
                         gross_loss = abs(losing_trades['Net Return (%)'].sum())
-                        
                         profit_factor = gross_profit / gross_loss if gross_loss != 0 else 0
                         payoff_ratio = abs(avg_win / avg_loss) if avg_loss != 0 else 0
-                        
                         best_trade = trades_df['Net Return (%)'].max()
                         worst_trade = trades_df['Net Return (%)'].min()
                     else:
                         total_trades = avg_holding_days = win_rate = avg_win = avg_loss = profit_factor = payoff_ratio = best_trade = worst_trade = 0
                     
-                    # -------------------------------------------------------------
-                    # 🔄 NON-OVERLAPPING SUB-PERIOD ANALYSIS
-                    # -------------------------------------------------------------
                     st.markdown("---")
                     st.subheader(f"📅 Non-Overlapping Sub-Period Analysis ({chunk_years}-Year Blocks)")
                     
@@ -407,10 +406,6 @@ with tab2:
                                      use_container_width=True)
                     
                     st.markdown("---")
-                    
-                    # -------------------------------------------------------------
-                    # 📊 ADVANCED ANALYTICS DASHBOARD
-                    # -------------------------------------------------------------
                     st.subheader(f"📈 Core Performance Analytics")
                     
                     st.markdown("**1. Return & Core Risk**")
@@ -423,11 +418,11 @@ with tab2:
                     
                     st.markdown("**2. Advanced Quant Ratios**")
                     r2_c1, r2_c2, r2_c3, r2_c4, r2_c5 = st.columns(5)
-                    r2_c1.metric("📊 Sharpe Ratio", f"{round(sharpe_ratio, 2)}", help="Risk-adjusted return (Higher is better).")
-                    r2_c2.metric("🟢 Sortino Ratio", f"{round(sortino_ratio, 2)}", help="Downside risk-adjusted return (Good > 1.5).")
-                    r2_c3.metric("🛡️ Calmar Ratio", f"{round(calmar_ratio, 2)}", help="CAGR / Max Drawdown (Good > 1.0).")
-                    r2_c4.metric("⚖️ Payoff Ratio", f"{round(payoff_ratio, 2)}", help="Average Win / Average Loss (Reward to Risk).")
-                    r2_c5.metric("💰 Profit Factor", f"{round(profit_factor, 2)}", help="Gross Profit / Gross Loss (Good > 1.5).")
+                    r2_c1.metric("📊 Sharpe Ratio", f"{round(sharpe_ratio, 2)}")
+                    r2_c2.metric("🟢 Sortino Ratio", f"{round(sortino_ratio, 2)}")
+                    r2_c3.metric("🛡️ Calmar Ratio", f"{round(calmar_ratio, 2)}")
+                    r2_c4.metric("⚖️ Payoff Ratio", f"{round(payoff_ratio, 2)}")
+                    r2_c5.metric("💰 Profit Factor", f"{round(profit_factor, 2)}")
 
                     st.markdown("**3. Trade Execution Stats**")
                     r3_c1, r3_c2, r3_c3, r3_c4, r3_c5 = st.columns(5)
