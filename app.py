@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import os
-from dhanhq import dhanhq
+from dhanhq import dhanhq, DhanContext
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Pro Quant Momentum System", layout="wide", page_icon="📈")
