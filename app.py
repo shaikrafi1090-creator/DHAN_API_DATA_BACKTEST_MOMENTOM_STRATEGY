@@ -101,7 +101,7 @@ import time # Ise file ke top par import zaroor karein agar nahi hai
 
 import time
 
-# --- 3. FETCH DHAN HISTORICAL DATA (WITH LIVE PROGRESS BAR) ---
+# --- 3. FETCH DHAN HISTORICAL DATA (WITH LIVE PROGRESS BAR & KEYWORD FIX) ---
 @st.cache_data(show_spinner=False)
 def fetch_historical_data(tickers, start_date, end_date):
     df_combined = pd.DataFrame()
@@ -125,11 +125,12 @@ def fetch_historical_data(tickers, start_date, end_date):
             continue
             
         try:
-            # 0.3s delay to strictly avoid API Rate Limit blocking
+            # API Rate Limit Protection (0.3s delay)
             time.sleep(0.3) 
             
+            # 🛑 MAIN FIX: 'symbol' ki jagah 'security_id' likha gaya hai
             req_data = dhan.historical_daily_data(
-                symbol=str(sec_id), 
+                security_id=str(sec_id), 
                 exchange_segment='NSE_EQ' if symbol != BENCHMARK else 'IDX_I',
                 instrument_type='EQUITY' if symbol != BENCHMARK else 'INDEX',
                 expiry_code=0,
@@ -145,7 +146,6 @@ def fetch_historical_data(tickers, start_date, end_date):
                 
                 df_combined[symbol] = temp_df['close']
             else:
-                # Agar Dhan API error de, toh screen par chota popup (toast) aayega
                 st.toast(f"⚠️ API Error for {symbol}: {req_data.get('remarks', 'Unknown Error')}")
                 
         except Exception as e:
